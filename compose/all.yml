@@ -1,0 +1,307 @@
+###############################################################################
+#  infra-stack – production-ready compose for all platform services
+#  Usage:  docker compose -f compose/all.yml --env-file .env up -d
+###############################################################################
+
+networks:
+  infra:
+    name: infra-network
+    driver: bridge
+
+volumes:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:
+  grafana_data:
+  prometheus_data:
+  mongodb_data:
+  loki_data:
+  vault_data:
+  vault_logs:
+  postgresql_data:
+  redis_data:
+  tusd_data:
+  minio_data:
+  n8n_data:
+  redisinsight_data:
+  runner_work:
+
+services:
+  # ──────────────────────────── 1. SonarQube (port 4014) ─────────────────────
+  # https://github.com/SonarSource/sonarqube
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: infra-sonarqube
+    ports:
+      - "${SONARQUBE_PORT:-4014}:9000"
+    environment:
+      SONAR_EMBEDDEDDATABASE_PORT: 9092
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
+      retries: 10
+
+  # ──────────────────────────── 2. Grafana (port 4015) ───────────────────────
+  # https://github.com/grafana/grafana
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: infra-grafana
+    ports:
+      - "${GRAFANA_PORT:-4015}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-4015}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ──────────────────────────── 3. Prometheus (port 4016) ────────────────────
+  # https://github.com/prometheus/prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: infra-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-4016}:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - prometheus_data:/prometheus
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ──────────────────────────── 4. MongoDB (port 4017) ───────────────────────
+  # https://github.com/mongodb/mongo
+  mongodb:
+    image: mongo:latest
+    container_name: infra-mongodb
+    ports:
+      - "${MONGODB_PORT:-4017}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin}
+    volumes:
+      - mongodb_data:/data/db
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ──────────────────────────── 5. Loki (port 4018) ──────────────────────────
+  # https://github.com/grafana/loki
+  loki:
+    image: grafana/loki:latest
+    container_name: infra-loki
+    ports:
+      - "${LOKI_PORT:-4018}:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    networks: [infra]
+    restart: unless-stopped
+
+  # ──────────────────────────── 6. Vault (port 4019) ─────────────────────────
+  # https://github.com/hashicorp/vault
+  vault:
+    image: hashicorp/vault:latest
+    container_name: infra-vault
+    ports:
+      - "${VAULT_PORT:-4019}:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:-root}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_data:/vault/file
+      - vault_logs:/vault/logs
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ──────────────────────────── 7. PostgreSQL (port 4020) ────────────────────
+  # https://github.com/postgres/postgres
+  postgresql:
+    image: postgres:latest
+    container_name: infra-postgresql
+    ports:
+      - "${POSTGRESQL_PORT:-4020}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-infra}
+    volumes:
+      - postgresql_data:/var/lib/postgresql
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # ──────────────────────────── 8. Redis (port 4021) ─────────────────────────
+  # https://github.com/redis/redis
+  redis:
+    image: redis:latest
+    container_name: infra-redis
+    ports:
+      - "${REDIS_PORT:-4021}:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ──────────────────────────── 9. tusd (port 4022) ──────────────────────────
+  # https://github.com/tus/tusd
+  tusd:
+    image: tusproject/tusd:latest
+    container_name: infra-tusd
+    ports:
+      - "${TUSD_PORT:-4022}:8080"
+    command: -upload-dir=/srv/tusd-data/uploads -hooks-http=http://localhost:8080/hooks -behind-proxy
+    volumes:
+      - tusd_data:/srv/tusd-data
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/metrics || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ──────────────────────────── 10. MinIO (port 4030 console / 4031 API) ─────
+  # https://github.com/minio/minio  |  Console: https://github.com/minio/console
+  minio:
+    image: minio/minio:latest
+    container_name: infra-minio
+    ports:
+      - "${MINIO_CONSOLE_PORT:-4030}:9001"
+      - "${MINIO_API_PORT:-4031}:9000"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ──────────────────────────── 11. GitHub Self-Hosted Runner (port 4033) ────
+  # https://github.com/myoung34/docker-github-actions-runner
+  github-runner:
+    image: myoung34/github-runner:latest
+    container_name: infra-github-runner
+    ports:
+      - "${RUNNER_PORT:-4033}:4033"
+    environment:
+      ACCESS_TOKEN: ${GITHUB_RUNNER_TOKEN:-}
+      REPO_URL: ${GITHUB_RUNNER_REPO:-https://github.com/suryansh-business-work/infra-stack}
+      RUNNER_NAME: ${RUNNER_NAME:-infra-runner}
+      RUNNER_WORKDIR: /tmp/runner/work
+      LABELS: self-hosted,linux,x64
+      DISABLE_AUTO_UPDATE: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner_work:/tmp/runner/work
+    networks: [infra]
+    restart: unless-stopped
+
+  # ──────────────────────────── 12. n8n (port 4034) ──────────────────────────
+  # https://github.com/n8n-io/n8n
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: infra-n8n
+    ports:
+      - "${N8N_PORT:-4034}:5678"
+    environment:
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:${N8N_PORT:-4034}/
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgresql
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_DB:-n8n}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-admin}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:-admin}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    networks: [infra]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ──────────────────────────── 13. RedisInsight (port 4035) ─────────────────
+  # https://github.com/redis/RedisInsight
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: infra-redisinsight
+    ports:
+      - "${REDISINSIGHT_PORT:-4035}:5540"
+    volumes:
+      - redisinsight_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [infra]
+    restart: unless-stopped
